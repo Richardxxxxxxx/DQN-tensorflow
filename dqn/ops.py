@@ -51,3 +51,86 @@ def linear(input_, output_size, stddev=0.02, bias_start=0.0, activation_fn=None,
       return activation_fn(out), w, b
     else:
       return out, w, b
+  
+def define_linear(input_, output_size, stddev=0.02, bias_start=0.0, activation_fn=None, name='linear'):
+  shape = input_.get_shape().as_list()
+
+  with tf.variable_scope(name):
+    w = tf.get_variable('Matrix', [shape[1], output_size], tf.float32,
+        tf.random_normal_initializer(stddev=stddev))
+    b = tf.get_variable('bias', [output_size],
+        initializer=tf.constant_initializer(bias_start))
+    return  w, b
+
+def calculate_linear(input_, output_size, stddev=0.02, bias_start=0.0, activation_fn=None, name='linear'):
+  shape = input_.get_shape().as_list()
+
+  with tf.variable_scope(name, reuse=True):
+    w = tf.get_variable('Matrix', [shape[1], output_size], tf.float32,
+        tf.random_normal_initializer(stddev=stddev))
+    b = tf.get_variable('bias', [output_size],
+        initializer=tf.constant_initializer(bias_start))
+
+    out = tf.nn.bias_add(tf.matmul(input_, w), b)
+
+    if activation_fn != None:
+      return activation_fn(out)
+    else:
+      return out
+
+
+def RNN(input_, output_size, initial_state = None, activation_fn = None, name='RNN'):
+  #shape = input_.get_shape().as_list()
+  #print(shape)
+  with tf.variable_scope(name) as vs:
+    #w = tf.get_variable('Matrix', [shape[1], output_size], tf.float32,
+    #    tf.random_normal_initializer(stddev=stddev))
+    #b = tf.get_variable('bias', [output_size],
+    #    initializer=tf.constant_initializer(bias_start))
+    
+    cell = tf.nn.rnn_cell.BasicLSTMCell(num_units=output_size, state_is_tuple=True)
+    
+    #weight.assign(w)
+    #bias.assign(b)
+    #init_state = cell.zero_state(tf.shape(input_)[1], dtype=tf.float32)
+    #output, final_state = tf.nn.dynamic_rnn(cell, input, initial_state=init_state, time_major=True)
+    output, state = tf.nn.dynamic_rnn(cell, input_, initial_state = initial_state, dtype=tf.float32, time_major=True)
+    weight, bias = [v for v in tf.trainable_variables() if v.name.startswith(vs.name)]
+    #for v in tf.trainable_variables():
+    #  print(v.name)
+    #  print(v.get_shape())
+    #print(len(lstm_variables))
+    #print("!!!!!!!!!!!!!!!!!!!!!!!")
+   
+    if activation_fn != None:
+      return activation_fn(output), weight, bias, state
+    else:
+      return output, weight, bias, state
+  
+def warpRNN(input_, cell, initial_state = None, activation_fn = None, name='RNN'):
+  #shape = input_.get_shape().as_list()
+  #print(shape)
+  with tf.variable_scope(name) as vs:
+    #w = tf.get_variable('Matrix', [shape[1], output_size], tf.float32,
+    #    tf.random_normal_initializer(stddev=stddev))
+    #b = tf.get_variable('bias', [output_size],
+    #    initializer=tf.constant_initializer(bias_start))
+    
+    #cell = tf.nn.rnn_cell.BasicLSTMCell(num_units=output_size, state_is_tuple=True)
+    
+    #weight.assign(w)
+    #bias.assign(b)
+    #init_state = cell.zero_state(tf.shape(input_)[1], dtype=tf.float32)
+    #output, final_state = tf.nn.dynamic_rnn(cell, input, initial_state=init_state, time_major=True)
+    output, state = tf.nn.dynamic_rnn(cell, input_, initial_state = initial_state, dtype=tf.float32, time_major=True)
+    weight, bias = [v for v in tf.trainable_variables() if v.name.startswith(vs.name)]
+    #for v in tf.trainable_variables():
+    #  print(v.name)
+    #  print(v.get_shape())
+    #print("!!!!!!!!!!!!!!!!!!!!!!!")
+   
+    if activation_fn != None:
+      return activation_fn(output), weight, bias, state
+    else:
+      return output, weight, bias, state
+

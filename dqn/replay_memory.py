@@ -26,6 +26,12 @@ class ReplayMemory:
     # pre-allocate prestates and poststates for minibatch
     self.prestates = np.empty((self.batch_size, self.history_length) + self.dims, dtype = np.float16)
     self.poststates = np.empty((self.batch_size, self.history_length) + self.dims, dtype = np.float16)
+    
+    
+    self.states = np.empty((self.batch_size, self.history_length) + self.dims, dtype = np.float16)
+    self.states_plus_1 = np.empty((self.batch_size, self.history_length) + self.dims, dtype = np.float16)
+    self.states_plus_2 = np.empty((self.batch_size, self.history_length) + self.dims, dtype = np.float16)
+
 
   def add(self, screen, reward, action, terminal):
     assert screen.shape == self.dims
@@ -50,7 +56,7 @@ class ReplayMemory:
       indexes = [(index - i) % self.count for i in reversed(range(self.history_length))]
       return self.screens[indexes, ...]
 
-  def sample(self):
+  def sample_g(self):
     # memory must include poststate, prestate and history
     assert self.count > self.history_length
     # sample random indexes
@@ -87,12 +93,52 @@ class ReplayMemory:
 
   def save(self):
     for idx, (name, array) in enumerate(
-        zip(['actions', 'rewards', 'screens', 'terminals', 'prestates', 'poststates'],
-            [self.actions, self.rewards, self.screens, self.terminals, self.prestates, self.poststates])):
+        zip(['actions', 'rewards', 'screens', 'terminals', 'states', 'states_plus_1', 'states_plus_2'],
+            [self.actions, self.rewards, self.screens, self.terminals, self.states, self.states_plus_1, self.states_plus_2])):
       save_npy(array, os.path.join(self.model_dir, name))
 
   def load(self):
     for idx, (name, array) in enumerate(
-        zip(['actions', 'rewards', 'screens', 'terminals', 'prestates', 'poststates'],
-            [self.actions, self.rewards, self.screens, self.terminals, self.prestates, self.poststates])):
+        zip(['actions', 'rewards', 'screens', 'terminals', 'states', 'states_plus_1', 'states_plus_2'],
+            [self.actions, self.rewards, self.screens, self.terminals, self.states, self.states_plus_1, self.states_plus_2])):
       array = load_npy(os.path.join(self.model_dir, name))
+      
+  def sample(self):
+    # memory must include poststate, prestate and history
+    assert self.count > self.history_length
+    # sample random indexes
+    indexes = []
+    indexes_plus_1 = []
+    while len(indexes) < self.batch_size:
+      # find random index 
+      while True:
+        # sample one index (ignore states wraping over 
+        index = random.randint(self.history_length, self.count - 1)
+        # if wraps over current pointer, then get new one
+        if index >= self.current and index - self.history_length < self.current:
+          continue
+        # if wraps over episode end, then get new one
+        # NB! poststate (last screen) can be terminal state!
+        if self.terminals[(index - self.history_length):index].any():
+          continue
+        # otherwise use this index
+        break
+      
+      # NB! having index first is fastest in C-order matrices
+      self.states[len(indexes), ...] = self.getState(index - 2)
+      self.states_plus_1[len(indexes), ...] = self.getState(index - 1)
+      self.states_plus_2[len(indexes), ...] = self.getState(index)
+      indexes.append(index -1)
+      indexes_plus_1.append(index)
+
+    actions = self.actions[indexes]
+    rewards = self.rewards[indexes]
+    actions_plus_1 = self.actions[indexes_plus_1]
+    rewards_plus_1 = self.rewards[indexes_plus_1]
+    terminals = self.terminals[indexes]
+
+    if self.cnn_format == 'NHWC':
+      return np.transpose(self.states, (0, 2, 3, 1)), actions, rewards, np.transpose(self.states_plus_1, (0, 2, 3, 1)), actions_plus_1, \
+        rewards_plus_1, np.transpose(self.states_plus_2, (0, 2, 3, 1)), terminals
+    else:
+      return self.states, actions, rewards, self.states_plus_1, actions_plus_1, rewards_plus_1, self.states_plus_2, terminals

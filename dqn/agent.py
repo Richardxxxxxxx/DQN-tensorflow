@@ -9,7 +9,7 @@ import tensorflow as tf
 from .base import BaseModel
 from .history import History
 from .replay_memory import ReplayMemory
-from .ops import linear, conv2d, clipped_error
+from .ops import linear, conv2d, clipped_error, RNN, calculate_linear, define_linear
 from .utils import get_time, save_pkl, load_pkl
 
 class Agent(BaseModel):
@@ -113,7 +113,7 @@ class Agent(BaseModel):
           ep_rewards = []
           actions = []
 
-  def predict(self, s_t, test_ep=None):
+  def predict(self, s_t, action_plus_1 = [0], test_ep=None):
     ep = test_ep or (self.ep_end +
         max(0., (self.ep_start - self.ep_end)
           * (self.ep_end_t - max(0., self.step - self.learn_start)) / self.ep_end_t))
@@ -121,7 +121,7 @@ class Agent(BaseModel):
     if random.random() < ep:
       action = random.randrange(self.env.action_size)
     else:
-      action = self.q_action.eval({self.s_t: [s_t]})[0]
+      action = self.q_action.eval({self.s_t: [s_t], self.action_plus: [action_plus_1]})[0]
 
     return action
 
@@ -142,7 +142,7 @@ class Agent(BaseModel):
     if self.memory.count < self.history_length:
       return
     else:
-      s_t, action, reward, s_t_plus_1, terminal = self.memory.sample()
+      s_t, action, reward, s_t_plus_1, actions_plus_1, rewards_plus_1, s_t_plus_2, terminal = self.memory.sample()
 
     t = time.time()
     if self.double_q:
@@ -155,25 +155,42 @@ class Agent(BaseModel):
       })
       target_q_t = (1. - terminal) * self.discount * q_t_plus_1_with_pred_action + reward
     else:
-      q_t_plus_1 = self.target_q.eval({self.target_s_t: s_t_plus_1})
-
+      q_t_plus_1 = self.target_q.eval({self.target_s_t: s_t_plus_1, self.target_action_plus : [actions_plus_1]})
+      
       terminal = np.array(terminal) + 0.
       max_q_t_plus_1 = np.max(q_t_plus_1, axis=1)
       target_q_t = (1. - terminal) * self.discount * max_q_t_plus_1 + reward
 
-    _, q_t, loss, summary_str = self.sess.run([self.optim, self.q, self.loss, self.q_summary], {
+      q_t_plus_2 = self.target_q.eval({self.target_s_t: s_t_plus_2, self.target_action_plus : [actions_plus_1]})
+      
+      max_q_t_plus_2 = np.max(q_t_plus_2, axis=1)
+      target_q_g_t = (1. - terminal) * self.discount * max_q_t_plus_2 + reward        
+
+    _, q_t, q_g_t, loss, summary_str = self.sess.run([self.optim, self.q, self.q_g, self.loss, self.q_summary], {
       self.target_q_t: target_q_t,
       self.action: action,
+      self.target_q_g_t: [target_q_g_t],
+      self.action_plus: [actions_plus_1],
       self.s_t: s_t,
       self.learning_rate_step: self.step,
     })
+    
+    #variables_names =[v.name for v in tf.trainable_variables() if v.name.startswith("prediction/l4")]
+    #values = self.sess.run(variables_names)
+    #for k,v in zip(variables_names, values):
+    #    print(k, v)
+    
+    #variables_names =[v.name for v in tf.trainable_variables() if v.name.startswith("target/l4")]
+    #values = self.sess.run(variables_names)
+    #for k,v in zip(variables_names, values):
+    #    print(k, v)
 
     self.writer.add_summary(summary_str, self.step)
     self.total_loss += loss
     self.total_q += q_t.mean()
     self.update_count += 1
 
-  def build_dqn(self):
+  def build_dqn_g(self):
     self.w = {}
     self.t_w = {}
 
@@ -403,3 +420,211 @@ class Agent(BaseModel):
     if not self.display:
       self.env.env.monitor.close()
       #gym.upload(gym_dir, writeup='https://github.com/devsisters/DQN-tensorflow', api_key='')
+
+  def build_dqn(self):
+    self.w = {}
+    self.t_w = {}
+
+    #initializer = tf.contrib.layers.xavier_initializer()
+    initializer = tf.truncated_normal_initializer(0, 0.02)
+    activation_fn = tf.nn.relu
+    #l4_rnn_cell = tf.nn.rnn_cell.BasicLSTMCell(num_units=512, state_is_tuple=True)
+    #l4_rnn_cell_g = tf.nn.rnn_cell.BasicLSTMCell(num_units=512, state_is_tuple=True)
+
+    # training network
+    with tf.variable_scope('prediction'):
+      if self.cnn_format == 'NHWC':
+        self.s_t = tf.placeholder('float32',
+            [None, self.screen_height, self.screen_width, self.history_length], name='s_t')
+      else:
+        self.s_t = tf.placeholder('float32',
+            [None, self.history_length, self.screen_height, self.screen_width], name='s_t')
+      self.l1, self.w['l1_w'], self.w['l1_b'] = conv2d(self.s_t,
+          32, [8, 8], [4, 4], initializer, activation_fn, self.cnn_format, name='l1')
+      self.l2, self.w['l2_w'], self.w['l2_b'] = conv2d(self.l1,
+          64, [4, 4], [2, 2], initializer, activation_fn, self.cnn_format, name='l2')
+      self.l3, self.w['l3_w'], self.w['l3_b'] = conv2d(self.l2,
+          64, [3, 3], [1, 1], initializer, activation_fn, self.cnn_format, name='l3')
+
+      shape = self.l3.get_shape().as_list()
+      self.l3_flat = tf.reshape(self.l3, [-1, reduce(lambda x, y: x * y, shape[1:])])
+
+      if self.dueling:
+        self.value_hid, self.w['l4_val_w'], self.w['l4_val_b'] = \
+            linear(self.l3_flat, 512, activation_fn=activation_fn, name='value_hid')
+
+        self.adv_hid, self.w['l4_adv_w'], self.w['l4_adv_b'] = \
+            linear(self.l3_flat, 512, activation_fn=activation_fn, name='adv_hid')
+
+        self.value, self.w['val_w_out'], self.w['val_w_b'] = \
+          linear(self.value_hid, 1, name='value_out')
+
+        self.advantage, self.w['adv_w_out'], self.w['adv_w_b'] = \
+          linear(self.adv_hid, self.env.action_size, name='adv_out')
+
+        # Average Dueling
+        self.q = self.value + (self.advantage - 
+          tf.reduce_mean(self.advantage, reduction_indices=1, keep_dims=True))
+      else:
+        #self.l4, self.w['l4_w'], self.w['l4_b'] = linear(self.l3_flat, 512, activation_fn=activation_fn, name='l4')
+        # self.q, self.w['q_w'], self.w['q_b'] = linear(self.l4, self.env.action_size, name='q')
+        #l5_in = tf.reshape(self.l4, [1] + tf.shape(self.l4)[0] + tf.shape(self.l4)[1])
+        l4_in = tf.expand_dims(self.l3_flat, 0)
+        #print(l5_in.get_shape())
+        #l5_in = np.zeros([1] + self.l4.get_shape().as_list())
+        #l5_in[0] = self.l4
+        self.l4, self.w['l4_w'], self.w['l4_b'], l4_state = RNN(l4_in, 512, activation_fn=activation_fn, name='l4')
+        self.l4 = self.l4[0]
+        self.q, self.w['q_w'], self.w['q_b'] = linear(self.l4, self.env.action_size, name='q')
+        
+        #final_state = state[0]
+        #l4_guess_in = tf.concat(concat_dim=1,values=[final_state, action_plus_1_one_hot])
+        self.action_plus = tf.placeholder('int64', [None,None], name='action_plus')
+        action_plus_one_hot = tf.one_hot(self.action_plus, self.env.action_size, 1.0, 0.0, name='action_plus_one_hot')
+        self.l4_g, self.w['l4_g_w'], self.w['l4_g_b'], state = RNN(action_plus_one_hot, 512, l4_state, activation_fn=activation_fn, name='l4_g')
+        
+        #predict_steps = [] # this will be the list of processed tensors
+        #for each in tf.unstack(self.l4_g):
+        #    # do whatever
+        #    each_q_g, self.w['q_g_w'], self.w['q_g_b'] = linear(each, self.env.action_size, name='q_g')
+        #    predict_steps.append(each_q_g)
+        #self.q_g = tf.concat(predict_steps, 0)
+        self.w['q_g_w'], self.w['l4_g_b']= define_linear(self.l4_g[0], self.env.action_size, name='q_g')
+        self.q_g = tf.map_fn(lambda x : calculate_linear(x, self.env.action_size, name='q_g'), self.l4_g)
+        #self.q_g = tf.expand_dims(self.q_g, 0)
+        
+      self.q_action = tf.argmax(self.q, dimension=1)
+
+      q_summary = []
+      avg_q = tf.reduce_mean(self.q, 0)
+      for idx in xrange(self.env.action_size):
+        q_summary.append(tf.summary.histogram('q/%s' % idx, avg_q[idx]))
+      self.q_summary = tf.summary.merge(q_summary, 'q_summary')
+
+    # target network
+    with tf.variable_scope('target'):
+      if self.cnn_format == 'NHWC':
+        self.target_s_t = tf.placeholder('float32', 
+            [None, self.screen_height, self.screen_width, self.history_length], name='target_s_t')
+      else:
+        self.target_s_t = tf.placeholder('float32', 
+            [None, self.history_length, self.screen_height, self.screen_width], name='target_s_t')
+      self.target_l1, self.t_w['l1_w'], self.t_w['l1_b'] = conv2d(self.target_s_t, 
+          32, [8, 8], [4, 4], initializer, activation_fn, self.cnn_format, name='target_l1')
+      self.target_l2, self.t_w['l2_w'], self.t_w['l2_b'] = conv2d(self.target_l1,
+          64, [4, 4], [2, 2], initializer, activation_fn, self.cnn_format, name='target_l2')
+      self.target_l3, self.t_w['l3_w'], self.t_w['l3_b'] = conv2d(self.target_l2,
+          64, [3, 3], [1, 1], initializer, activation_fn, self.cnn_format, name='target_l3')
+
+      shape = self.target_l3.get_shape().as_list()
+      self.target_l3_flat = tf.reshape(self.target_l3, [-1, reduce(lambda x, y: x * y, shape[1:])])
+
+      if self.dueling:
+        self.t_value_hid, self.t_w['l4_val_w'], self.t_w['l4_val_b'] = \
+            linear(self.target_l3_flat, 512, activation_fn=activation_fn, name='target_value_hid')
+
+        self.t_adv_hid, self.t_w['l4_adv_w'], self.t_w['l4_adv_b'] = \
+            linear(self.target_l3_flat, 512, activation_fn=activation_fn, name='target_adv_hid')
+
+        self.t_value, self.t_w['val_w_out'], self.t_w['val_w_b'] = \
+          linear(self.t_value_hid, 1, name='target_value_out')
+
+        self.t_advantage, self.t_w['adv_w_out'], self.t_w['adv_w_b'] = \
+          linear(self.t_adv_hid, self.env.action_size, name='target_adv_out')
+
+        # Average Dueling
+        self.target_q = self.t_value + (self.t_advantage - 
+          tf.reduce_mean(self.t_advantage, reduction_indices=1, keep_dims=True))
+      else:
+        #self.target_l4, self.t_w['l4_w'], self.t_w['l4_b'] = \
+            #linear(self.target_l3_flat, 512, activation_fn=activation_fn, name='target_l4')
+        #self.target_q, self.t_w['q_w'], self.t_w['q_b'] = \
+            #linear(self.target_l4, self.env.action_size, name='target_q')
+        #l5_in = tf.reshape(self.target_l4, [1] + tf.shape(self.target_l4)[0] + tf.shape(self.target_l4)[1])
+        target_l4_in = tf.expand_dims(self.target_l3_flat, 0)
+        #print(l5_in.get_shape())
+        self.target_l4, self.t_w['l4_w'], self.t_w['l4_b'], target_l4_state = RNN(target_l4_in, 512, activation_fn=activation_fn, name='l4')
+        self.target_l4 = self.target_l4[0]
+        self.target_q, self.t_w['q_w'], self.t_w['q_b'] = linear(self.target_l4, self.env.action_size, name='target_q')
+
+        #final_state = state[0]
+        #target_l4_guess_in = tf.concat(concat_dim=1,values=[final_state, target_action_plus_1_one_hot])
+        #target_l4_guess_in = tf.expand_dims(target_action_plus_1_one_hot, 0)
+        self.target_action_plus = tf.placeholder('int64', [None,None], name='target_action_plus')
+        target_action_plus_one_hot = tf.one_hot(self.target_action_plus, self.env.action_size, 1.0, 0.0, name='target_action_plus_one_hot')
+        self.target_l4_g, self.t_w['l4_g_w'], self.t_w['l4_g_b'], state = RNN(target_action_plus_one_hot, 512, target_l4_state, activation_fn=activation_fn, name='l4_g')
+        #self.target_l4_g = self.target_l4_g[0]
+        #self.target_q_g, self.t_w['q_g_w'], self.t_w['q_g_b'] = linear(self.target_l4_g[0], self.env.action_size, name='target_q_g')
+        #self.target_q_g = tf.expand_dims(self.target_q_g, 0)
+        self.t_w['q_g_w'], self.t_w['l4_g_b']= define_linear(self.target_l4_g[0], self.env.action_size, name='target_q_g')
+        self.target_q_g = tf.map_fn(lambda x : calculate_linear(x, self.env.action_size, name='target_q_g'), self.target_l4_g)
+
+        
+      self.target_q_idx = tf.placeholder('int32', [None, None], 'outputs_idx')
+      self.target_q_with_idx = tf.gather_nd(self.target_q, self.target_q_idx)
+
+    with tf.variable_scope('pred_to_target'):
+      self.t_w_input = {}
+      self.t_w_assign_op = {}
+
+      for name in self.w.keys():
+        self.t_w_input[name] = tf.placeholder('float32', self.t_w[name].get_shape().as_list(), name=name)
+        self.t_w_assign_op[name] = self.t_w[name].assign(self.t_w_input[name])
+
+    # optimizer
+    with tf.variable_scope('optimizer'):
+      self.target_q_t = tf.placeholder('float32', [None], name='target_q_t')
+      self.action = tf.placeholder('int64', [None], name='action')
+      action_one_hot = tf.one_hot(self.action, self.env.action_size, 1.0, 0.0, name='action_one_hot')
+      q_acted = tf.reduce_sum(self.q * action_one_hot, reduction_indices=1, name='q_acted')
+      #step batch
+      self.target_q_g_t = tf.placeholder('float32', [None, None], name='target_q_g_t')
+      #self.action_plus_1 = tf.placeholder('int64', [None], name='action_plus_1')
+      action_plus_one_hot = tf.one_hot(self.action_plus, self.env.action_size, 1.0, 0.0, name='action_plus_one_hot')
+      #q_g_acted = tf.reduce_sum(self.q_g * action_one_hot, reduction_indices=1, name='q_g_acted')
+      q_g_acted = tf.reduce_sum(self.q_g * action_one_hot, reduction_indices=2, name='q_g_acted')
+
+      self.delta = self.target_q_t - q_acted
+      self.delta_g = self.target_q_g_t - q_g_acted
+      self.global_step = tf.Variable(0, trainable=False)
+
+      self.loss_delta = tf.reduce_mean(clipped_error(self.delta), name='loss_delta')
+      self.loss_delta_g = tf.reduce_mean(clipped_error(self.delta_g), name='loss_delta_g')
+      self.loss = tf.add(self.loss_delta, self.loss_delta_g, 'loss')
+      self.learning_rate_step = tf.placeholder('int64', None, name='learning_rate_step')
+      self.learning_rate_op = tf.maximum(self.learning_rate_minimum,
+          tf.train.exponential_decay(
+              self.learning_rate,
+              self.learning_rate_step,
+              self.learning_rate_decay_step,
+              self.learning_rate_decay,
+              staircase=True))
+      self.optim = tf.train.RMSPropOptimizer(
+          self.learning_rate_op, momentum=0.95, epsilon=0.01).minimize(self.loss)
+
+    with tf.variable_scope('summary'):
+      scalar_summary_tags = ['average.reward', 'average.loss', 'average.q', \
+          'episode.max reward', 'episode.min reward', 'episode.avg reward', 'episode.num of game', 'training.learning_rate']
+
+      self.summary_placeholders = {}
+      self.summary_ops = {}
+
+      for tag in scalar_summary_tags:
+        self.summary_placeholders[tag] = tf.placeholder('float32', None, name=tag.replace(' ', '_'))
+        self.summary_ops[tag]  = tf.summary.scalar("%s-%s/%s" % (self.env_name, self.env_type, tag), self.summary_placeholders[tag])
+
+      histogram_summary_tags = ['episode.rewards', 'episode.actions']
+
+      for tag in histogram_summary_tags:
+        self.summary_placeholders[tag] = tf.placeholder('float32', None, name=tag.replace(' ', '_'))
+        self.summary_ops[tag]  = tf.summary.histogram(tag, self.summary_placeholders[tag])
+
+      self.writer = tf.summary.FileWriter('./logs/%s' % self.model_dir, self.sess.graph)
+
+    tf.initialize_all_variables().run()
+
+    self._saver = tf.train.Saver(self.w.values() + [self.step_op], max_to_keep=30)
+
+    self.load_model()
+    self.update_target_q_network()
+
