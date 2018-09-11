@@ -181,5 +181,5 @@ class ReplayMemory:
       return [np.transpose(self.states, (0, 2, 3, 1)),np.transpose(self.states_plus_1, (0, 2, 3, 1)),np.transpose(self.states_plus_2, (0, 2, 3, 1))], [actions,actions_plus_1], [rewards,rewards_plus_1], terminals
 
     else:
-      return [self.states,self.state_plus_1,self.states_plus_2], [actions,actions_plus_1], [rewards,rewards_plus_1], terminals
+      return [self.states,self.states_plus_1,self.states_plus_2], [actions,actions_plus_1], [rewards,rewards_plus_1], terminals
 
