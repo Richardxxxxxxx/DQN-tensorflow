@@ -113,7 +113,9 @@ class Agent(BaseModel):
           ep_rewards = []
           actions = []
 
-  def predict(self, s_t, action_plus_1 = [0], test_ep=None):
+#  def predict(self, s_t, action_plus_1 = [0], test_ep=None):
+  def predict(self, s_t, test_ep=None):
+
     ep = test_ep or (self.ep_end +
         max(0., (self.ep_start - self.ep_end)
           * (self.ep_end_t - max(0., self.step - self.learn_start)) / self.ep_end_t))
@@ -121,7 +123,8 @@ class Agent(BaseModel):
     if random.random() < ep:
       action = random.randrange(self.env.action_size)
     else:
-      action = self.q_action.eval({self.s_t: [s_t], self.action_plus: [action_plus_1]})[0]
+      #action = self.q_action.eval({self.s_t: [s_t], self.action_plus: [action_plus_1]})[0]
+      action = self.q_action.eval({self.s_t: [s_t]})[0]
 
     return action
 
@@ -142,36 +145,43 @@ class Agent(BaseModel):
     if self.memory.count < self.history_length:
       return
     else:
-      s_t, action, reward, s_t_plus_1, actions_plus_1, rewards_plus_1, s_t_plus_2, terminal = self.memory.sample()
+      s_ts, actions, rewards, terminal = self.memory.sample()
 
     t = time.time()
     if self.double_q:
       # Double Q-learning
-      pred_action = self.q_action.eval({self.s_t: s_t_plus_1})
+      pred_action = self.q_action.eval({self.s_t: s_ts[1]})
 
       q_t_plus_1_with_pred_action = self.target_q_with_idx.eval({
-        self.target_s_t: s_t_plus_1,
+        self.target_s_t: s_ts[1],
         self.target_q_idx: [[idx, pred_a] for idx, pred_a in enumerate(pred_action)]
       })
-      target_q_t = (1. - terminal) * self.discount * q_t_plus_1_with_pred_action + reward
+      target_q_t = (1. - terminal) * self.discount * q_t_plus_1_with_pred_action + rewards[0]
     else:
-      q_t_plus_1 = self.target_q.eval({self.target_s_t: s_t_plus_1, self.target_action_plus : [actions_plus_1]})
-      
+      #q_t_plus_1 = self.target_q.eval({self.target_s_t: s_t_plus_1, self.target_action_plus : [actions_plus_1]})
+      q_t_plus_1 = self.target_q.eval({self.target_s_t: s_ts[1]})
+
       terminal = np.array(terminal) + 0.
       max_q_t_plus_1 = np.max(q_t_plus_1, axis=1)
-      target_q_t = (1. - terminal) * self.discount * max_q_t_plus_1 + reward
+      target_q_t = (1. - terminal) * self.discount * max_q_t_plus_1 + rewards[0]
 
-      q_t_plus_2 = self.target_q.eval({self.target_s_t: s_t_plus_2, self.target_action_plus : [actions_plus_1]})
-      
-      max_q_t_plus_2 = np.max(q_t_plus_2, axis=1)
-      target_q_g_t = (1. - terminal) * self.discount * max_q_t_plus_2 + reward        
+      target_q_g_ts = []
+      #q_t_plus_2 = self.target_q.eval({self.target_s_t: s_t_plus_2, self.target_action_plus : [actions_plus_1]})
+      for s_t_plus, reward_plus_deduct_1 in zip(s_ts[2:],rewards[1:]):   
+          q_t_plus = self.target_q.eval({self.target_s_t: s_t_plus})
+          max_q_t_plus = np.max(q_t_plus, axis=1)
+          target_q_g_t = (1. - terminal) * self.discount * max_q_t_plus + reward_plus_deduct_1
+          target_q_g_ts.append(target_q_g_t)
 
+    #for op, self.action_plus shouble actions [1:]
+    #for self.q_g, self.action_sequence should use actions [0:-1]
     _, q_t, q_g_t, loss, summary_str = self.sess.run([self.optim, self.q, self.q_g, self.loss, self.q_summary], {
+      self.s_t: s_ts[0],
       self.target_q_t: target_q_t,
-      self.action: action,
-      self.target_q_g_t: [target_q_g_t],
-      self.action_plus: [actions_plus_1],
-      self.s_t: s_t,
+      self.action: actions[0],
+      self.target_q_g_ts: target_q_g_ts,
+      self.action_plus: actions[1:],
+      self.action_sequence: actions[:-1],
       self.learning_rate_step: self.step,
     })
     
@@ -479,9 +489,9 @@ class Agent(BaseModel):
         
         #final_state = state[0]
         #l4_guess_in = tf.concat(concat_dim=1,values=[final_state, action_plus_1_one_hot])
-        self.action_plus = tf.placeholder('int64', [None,None], name='action_plus')
-        action_plus_one_hot = tf.one_hot(self.action_plus, self.env.action_size, 1.0, 0.0, name='action_plus_one_hot')
-        self.l4_g, self.w['l4_g_w'], self.w['l4_g_b'], state = RNN(action_plus_one_hot, 512, l4_state, activation_fn=activation_fn, name='l4_g')
+        self.action_sequence = tf.placeholder('int64', [None,None], name='action_sequence')
+        action_sequence_one_hot = tf.one_hot(self.action_sequence, self.env.action_size, 1.0, 0.0, name='action_sequence_one_hot')
+        self.l4_g, self.w['l4_g_w'], self.w['l4_g_b'], state = RNN(action_sequence_one_hot, 512, l4_state, activation_fn=activation_fn, name='l4_g')
         
         #predict_steps = [] # this will be the list of processed tensors
         #for each in tf.unstack(self.l4_g):
@@ -550,8 +560,8 @@ class Agent(BaseModel):
         #final_state = state[0]
         #target_l4_guess_in = tf.concat(concat_dim=1,values=[final_state, target_action_plus_1_one_hot])
         #target_l4_guess_in = tf.expand_dims(target_action_plus_1_one_hot, 0)
-        self.target_action_plus = tf.placeholder('int64', [None,None], name='target_action_plus')
-        target_action_plus_one_hot = tf.one_hot(self.target_action_plus, self.env.action_size, 1.0, 0.0, name='target_action_plus_one_hot')
+        self.target_action_sequence = tf.placeholder('int64', [None,None], name='target_action_sequence')
+        target_action_plus_one_hot = tf.one_hot(self.target_action_sequence, self.env.action_size, 1.0, 0.0, name='target_action_plus_one_hot')
         self.target_l4_g, self.t_w['l4_g_w'], self.t_w['l4_g_b'], state = RNN(target_action_plus_one_hot, 512, target_l4_state, activation_fn=activation_fn, name='l4_g')
         #self.target_l4_g = self.target_l4_g[0]
         #self.target_q_g, self.t_w['q_g_w'], self.t_w['q_g_b'] = linear(self.target_l4_g[0], self.env.action_size, name='target_q_g')
@@ -578,14 +588,15 @@ class Agent(BaseModel):
       action_one_hot = tf.one_hot(self.action, self.env.action_size, 1.0, 0.0, name='action_one_hot')
       q_acted = tf.reduce_sum(self.q * action_one_hot, reduction_indices=1, name='q_acted')
       #step batch
-      self.target_q_g_t = tf.placeholder('float32', [None, None], name='target_q_g_t')
+      self.target_q_g_ts = tf.placeholder('float32', [None, None], name='target_q_g_t')
+      self.action_plus = tf.placeholder('int64', [None,None], name='action_plus')
       #self.action_plus_1 = tf.placeholder('int64', [None], name='action_plus_1')
       action_plus_one_hot = tf.one_hot(self.action_plus, self.env.action_size, 1.0, 0.0, name='action_plus_one_hot')
       #q_g_acted = tf.reduce_sum(self.q_g * action_one_hot, reduction_indices=1, name='q_g_acted')
-      q_g_acted = tf.reduce_sum(self.q_g * action_one_hot, reduction_indices=2, name='q_g_acted')
+      q_g_acted = tf.reduce_sum(self.q_g * action_plus_one_hot, reduction_indices=2, name='q_g_acted')
 
       self.delta = self.target_q_t - q_acted
-      self.delta_g = self.target_q_g_t - q_g_acted
+      self.delta_g = self.target_q_g_ts - q_g_acted
       self.global_step = tf.Variable(0, trainable=False)
 
       self.loss_delta = tf.reduce_mean(clipped_error(self.delta), name='loss_delta')
