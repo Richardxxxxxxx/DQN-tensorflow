@@ -22,15 +22,17 @@ class ReplayMemory:
     self.batch_size = config.batch_size
     self.count = 0
     self.current = 0
+    self.sequnce_length = config.sequnce_length
 
     # pre-allocate prestates and poststates for minibatch
     self.prestates = np.empty((self.batch_size, self.history_length) + self.dims, dtype = np.float16)
     self.poststates = np.empty((self.batch_size, self.history_length) + self.dims, dtype = np.float16)
     
     
-    self.states = np.empty((self.batch_size, self.history_length) + self.dims, dtype = np.float16)
-    self.states_plus_1 = np.empty((self.batch_size, self.history_length) + self.dims, dtype = np.float16)
-    self.states_plus_2 = np.empty((self.batch_size, self.history_length) + self.dims, dtype = np.float16)
+    #self.states = np.empty((self.batch_size, self.history_length) + self.dims, dtype = np.float16)
+    #self.states_plus_1 = np.empty((self.batch_size, self.history_length) + self.dims, dtype = np.float16)
+    #self.states_plus_2 = np.empty((self.batch_size, self.history_length) + self.dims, dtype = np.float16)
+    self.states = np.empty((self.sequnce_length, self.batch_size, self.history_length) + self.dims, dtype = np.float16)
 
 
   def add(self, screen, reward, action, terminal):
@@ -143,7 +145,54 @@ class ReplayMemory:
     else:
       return self.states, actions, rewards, self.states_plus_1, actions_plus_1, rewards_plus_1, self.states_plus_2, terminals
   
+  def isValidIndex(self, index):
+    if index >= self.current and index - self.history_length < self.current:
+        return False
+    if self.terminals[(index - self.history_length):index].any():
+        return False
+    return True
+    
   def sample(self):
+    # memory must include poststate, prestate and history
+    assert self.count > self.history_length
+    # sample random indexes
+    indexes = []
+    indexes_end = []
+    while len(indexes) < self.batch_size:
+      # find random index 
+      while True:
+        # sample one index (ignore states wraping over 
+        index = random.randint(self.history_length, self.count - 1)
+        for i in range(self.sequnce_length):
+            if not self.isValidIndex(index - i):
+                continue
+        break
+      for i in range(self.sequnce_length):
+          self.states[self.sequnce_length - i - 1, len(indexes), ...] = self.getState(index - i)
+      indexes.append([ index - i for i in range(self.sequnce_length - 1)[::-1]])
+      indexes_end.append(index)
+    actions = []
+    rewards = []
+    for each in zip(*indexes):
+        actions.append(self.actions[list(each)])
+        rewards.append(self.rewards[list(each)])
+    terminals = self.terminals[indexes_end]
+
+    #restates = []
+    #if self.cnn_format == 'NHWC':
+    #  for i in range(self.sequnce_length):
+    #    restates.append(np.transpose(self.states[i], (0, 2, 3, 1)))
+    #else :
+    #  for i in range(self.sequnce_length):
+    #    restates.append(self.states[i])
+    #return restates, actions, rewards, terminals
+    if self.cnn_format == 'NHWC':
+      return np.transpose(self.states, (0, 1, 3, 4, 2)), actions, rewards, terminals
+    else:
+      return self.states, actions, rewards, terminals
+
+ 
+  def sample_k(self):
     # memory must include poststate, prestate and history
     assert self.count > self.history_length
     # sample random indexes

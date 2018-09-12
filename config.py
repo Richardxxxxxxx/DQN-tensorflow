@@ -1,5 +1,5 @@
 class AgentConfig(object):
-  scale = 10000
+  scale = 1000
   display = False
 
   max_step = 5000 * scale
@@ -28,9 +28,10 @@ class AgentConfig(object):
 
   double_q = False
   dueling = False
-
   _test_step = 5 * scale
   _save_step = _test_step * 10
+  
+  sequnce_length = 5
 
 class EnvironmentConfig(object):
   env_name = 'Breakout-v0'
@@ -48,6 +49,11 @@ class M1(DQNConfig):
   backend = 'tf'
   env_type = 'detail'
   action_repeat = 1
+  
+class M2(DQNConfig):
+  backend = 'tf'
+  env_type = 'detail'
+  action_repeat = 4
 
 def get_config(FLAGS):
   if FLAGS.model == 'm1':

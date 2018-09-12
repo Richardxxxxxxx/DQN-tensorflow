@@ -11,6 +11,8 @@ from .history import History
 from .replay_memory import ReplayMemory
 from .ops import linear, conv2d, clipped_error, RNN, calculate_linear, define_linear
 from .utils import get_time, save_pkl, load_pkl
+#from tensorflow.python.profiler import model_analyzer
+#from tensorflow.python.profiler import option_builder
 
 class Agent(BaseModel):
   def __init__(self, config, environment, sess):
@@ -28,8 +30,11 @@ class Agent(BaseModel):
       self.step_assign_op = self.step_op.assign(self.step_input)
 
     self.build_dqn()
+    #self.profiler = model_analyzer.Profiler(self.sess.graph)
+        
 
   def train(self):
+  
     start_step = self.step_op.eval()
     start_time = time.time()
 
@@ -50,14 +55,24 @@ class Agent(BaseModel):
         ep_rewards, actions = [], []
 
       # 1. predict
+      t1 = time.time()
       action = self.predict(self.history.get())
       # 2. act
+      t2 = time.time()
       screen, reward, terminal = self.env.act(action, is_training=True)
       # 3. observe
+      t3 = time.time()
       self.observe(screen, reward, action, terminal)
+      t4 = time.time()
+      if self.step >= self.learn_start:
+        #if self.step % self.test_step == self.test_step - 1:
+        if self.step % (self.train_frequency*self.scale) == 0:
+            print('\npre: %f, act: %f, obs: %f' % (t2-t1, t3-t2, t4-t3))
 
       if terminal:
         screen, reward, action, terminal = self.env.new_random_game()
+        for _ in range(self.history_length):
+          self.history.add(screen)
 
         num_game += 1
         ep_rewards.append(ep_reward)
@@ -175,6 +190,8 @@ class Agent(BaseModel):
 
     #for op, self.action_plus shouble actions [1:]
     #for self.q_g, self.action_sequence should use actions [0:-1]
+    #run_metadata = tf.RunMetadata()
+    #run_options = tf.RunOptions(trace_level=tf.RunOptions.FULL_TRACE)
     _, q_t, q_g_t, loss, summary_str = self.sess.run([self.optim, self.q, self.q_g, self.loss, self.q_summary], {
       self.s_t: s_ts[0],
       self.target_q_t: target_q_t,
@@ -184,6 +201,12 @@ class Agent(BaseModel):
       self.action_sequence: actions[:-1],
       self.learning_rate_step: self.step,
     })
+    #self.profiler.add_step(self.step, run_metadata)
+    #profile_op_opt_builder = option_builder.ProfileOptionBuilder()
+    #profile_op_opt_builder.select(['micros','occurrence'])
+    #profile_op_opt_builder.order_by('micros')
+    #profile_op_opt_builder.with_max_depth(4)
+    #self.profiler.profile_operations(options=profile_op_opt_builder.build())
     
     #variables_names =[v.name for v in tf.trainable_variables() if v.name.startswith("prediction/l4")]
     #values = self.sess.run(variables_names)
@@ -588,7 +611,7 @@ class Agent(BaseModel):
       action_one_hot = tf.one_hot(self.action, self.env.action_size, 1.0, 0.0, name='action_one_hot')
       q_acted = tf.reduce_sum(self.q * action_one_hot, reduction_indices=1, name='q_acted')
       #step batch
-      self.target_q_g_ts = tf.placeholder('float32', [None, None], name='target_q_g_t')
+      self.target_q_g_ts = tf.placeholder('float32', [None, None], name='target_q_g_ts')
       self.action_plus = tf.placeholder('int64', [None,None], name='action_plus')
       #self.action_plus_1 = tf.placeholder('int64', [None], name='action_plus_1')
       action_plus_one_hot = tf.one_hot(self.action_plus, self.env.action_size, 1.0, 0.0, name='action_plus_one_hot')
