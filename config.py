@@ -1,17 +1,17 @@
 class AgentConfig(object):
-  scale = 1000
+  scale = 10000
   display = False
 
   max_step = 5000 * scale
   memory_size = 100 * scale
 
   batch_size = 32
-  random_start = 30
+  random_start = 15
   cnn_format = 'NCHW'
   discount = 0.99
   target_q_update_step = 1 * scale
   learning_rate = 0.00025
-  learning_rate_minimum = 0.00025
+  learning_rate_minimum = 0.00001
   learning_rate_decay = 0.96
   learning_rate_decay_step = 5 * scale
 
@@ -31,8 +31,9 @@ class AgentConfig(object):
   _test_step = 5 * scale
   _save_step = _test_step * 10
   
-  sequnce_length = 5
-
+  sequnce_length = 3
+  q_fraction = 0.9
+  q_guess_fraction = 0.1
 class EnvironmentConfig(object):
   env_name = 'Breakout-v0'
 
@@ -48,9 +49,14 @@ class DQNConfig(AgentConfig, EnvironmentConfig):
 class M1(DQNConfig):
   backend = 'tf'
   env_type = 'detail'
-  action_repeat = 1
-  
+  action_repeat = 3
+
 class M2(DQNConfig):
+  backend = 'tf'
+  env_type = 'detail'
+  action_repeat = 2
+
+class M3(DQNConfig):
   backend = 'tf'
   env_type = 'detail'
   action_repeat = 4
@@ -61,7 +67,8 @@ def get_config(FLAGS):
   elif FLAGS.model == 'm2':
     config = M2
 
-  for k, v in FLAGS.__dict__['__flags'].items():
+  for k in FLAGS:
+    v = FLAGS[k].value
     if k == 'gpu':
       if v == False:
         config.cnn_format = 'NHWC'

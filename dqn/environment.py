@@ -6,7 +6,7 @@ from .utils import rgb2gray, imresize
 class Environment(object):
   def __init__(self, config):
     self.env = gym.make(config.env_name)
-
+    self.env = self.env.unwrapped
     screen_width, screen_height, self.action_repeat, self.random_start = \
         config.screen_width, config.screen_height, config.action_repeat, config.random_start
 
@@ -20,14 +20,14 @@ class Environment(object):
   def new_game(self, from_random_game=False):
     if self.lives == 0:
       self._screen = self.env.reset()
-    self._step(0)
+    self._step(1)
     self.render()
     return self.screen, 0, 0, self.terminal
 
   def new_random_game(self):
     self.new_game(True)
-    for _ in xrange(random.randint(0, self.random_start - 1)):
-      self._step(0)
+    for _ in xrange(random.randint(0, 30)):
+      self._step(1)
     self.render()
     return self.screen, 0, 0, self.terminal
 

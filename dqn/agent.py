@@ -412,7 +412,7 @@ class Agent(BaseModel):
     for summary_str in summary_str_lists:
       self.writer.add_summary(summary_str, self.step)
 
-  def play(self, n_step=10000, n_episode=100, test_ep=None, render=False):
+  def play(self, n_step=10000, n_episode=30, test_ep=0.05, render=False):
     if test_ep == None:
       test_ep = self.ep_end
 
@@ -421,7 +421,7 @@ class Agent(BaseModel):
     if not self.display:
       gym_dir = '/tmp/%s-%s' % (self.env_name, get_time())
       self.env.env.monitor.start(gym_dir)
-
+    scores = []
     best_reward, best_idx = 0, 0
     for idx in xrange(n_episode):
       screen, reward, action, terminal = self.env.new_random_game()
@@ -447,9 +447,13 @@ class Agent(BaseModel):
         best_idx = idx
 
       print("="*30)
+      print(" [%d] current reward : %d" % (idx, current_reward))
       print(" [%d] Best reward : %d" % (best_idx, best_reward))
       print("="*30)
-
+      scores.append(current_reward)
+    print(scores)
+    print(np.std(scores))
+    print(np.mean(scores))
     if not self.display:
       self.env.env.monitor.close()
       #gym.upload(gym_dir, writeup='https://github.com/devsisters/DQN-tensorflow', api_key='')
@@ -618,13 +622,13 @@ class Agent(BaseModel):
       #q_g_acted = tf.reduce_sum(self.q_g * action_one_hot, reduction_indices=1, name='q_g_acted')
       q_g_acted = tf.reduce_sum(self.q_g * action_plus_one_hot, reduction_indices=2, name='q_g_acted')
 
-      self.delta = self.target_q_t - q_acted
-      self.delta_g = self.target_q_g_ts - q_g_acted
+      self.delta = tf.subtract(self.target_q_t, q_acted)
+      self.delta_g = tf.subtract(self.target_q_g_ts, q_g_acted)
       self.global_step = tf.Variable(0, trainable=False)
 
       self.loss_delta = tf.reduce_mean(clipped_error(self.delta), name='loss_delta')
       self.loss_delta_g = tf.reduce_mean(clipped_error(self.delta_g), name='loss_delta_g')
-      self.loss = tf.add(self.loss_delta, self.loss_delta_g, 'loss')
+      self.loss = tf.add(tf.multiply(self.loss_delta, self.q_fraction), tf.multiply(self.loss_delta_g, self.q_guess_fraction), 'loss')
       self.learning_rate_step = tf.placeholder('int64', None, name='learning_rate_step')
       self.learning_rate_op = tf.maximum(self.learning_rate_minimum,
           tf.train.exponential_decay(
